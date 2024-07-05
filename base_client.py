@@ -2,6 +2,7 @@ import socket
 import threading
 import signal
 import sys
+import os
 
 
 from message import *
@@ -65,10 +66,14 @@ class BaseChatClient:
     def server_shutdown_handler(self):
         self.abort('Server was shutted down')
 
+    def userinfo_answer_handler(self, users_online):
+        answer = "SERVER: Online are: " + ", ".join(map(lambda s: f'"{s}"', users_online))
+        self.display_message(answer)
+
     def display_message(self, message):
         raise NotImplementedError("This method should be overridden in subclasses")
 
-    def send_message(self, message, msg_type):
+    def send_message(self, message, msg_type = MsgType.none):
         try:
             send_message(self.sock, message, msg_type)
         except:
@@ -76,14 +81,26 @@ class BaseChatClient:
 
     def send_chatmessage(self, message):
         if message:
-            self.send_message(message, MsgType.none)
+            self.send_message(message)
 
     def usersinfo_request(self):
         self.send_message("", MsgType.usersinfo)
 
-    def userinfo_answer_handler(self, users_online):
-        answer = "SERVER: Online are: " + ", ".join(map(lambda s: f'"{s}"', users_online))
-        self.display_message(answer)
+    def send_file(self):
+        filename = self.selectfile()
+        if filename is None: return
+
+        basename = os.path.basename(filename)
+        self.send_message(basename, MsgType.file)
+
+        data = open(filename).read()
+        self.send_message(data)
+        
+
+
+    def selectfile(self):
+        raise NotImplementedError("This method should be overridden in subclasses")
+
 
     def close_connection(self):
         if self.opened:

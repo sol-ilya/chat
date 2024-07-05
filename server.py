@@ -71,16 +71,17 @@ class ChatServer:
 
         while True:
             try:
-                msg_type, message = receive_message(user.sock)
+                msg_type, message = receive_message(user.sock, throw_error=True)
                 print(f'Received message "{message}" ({msg_type.name}) from {user}')
                 if msg_type == MsgType.none:
                     self.broadcast(f'{user}: {message}')
-                elif  msg_type == MsgType.usersinfo:
+                elif msg_type == MsgType.usersinfo:
                     answer = "\0".join(User.names())
                     send_message(user.sock, answer, MsgType.usersinfo)
-                elif msg_type == MsgType.empty:
-                    self.remove_client(user)
-                    break
+                elif msg_type == MsgType.file:
+                    _, data = receive_message(user.sock, throw_error=True)
+                    with open(f'./{message}', "w") as f:
+                        f.write(data)
                 else:
                     print('Message of unknown type')
             except:

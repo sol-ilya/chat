@@ -1,7 +1,7 @@
 #!/bin/python
 
 import tkinter as tk
-from tkinter import scrolledtext, simpledialog, messagebox
+from tkinter import scrolledtext, simpledialog, messagebox, filedialog
 from base_client import BaseChatClient
 
 class GUIChatClient(BaseChatClient):
@@ -39,6 +39,7 @@ class GUIChatClient(BaseChatClient):
         menu = tk.Menu(self.master)
         menu.add_command(label="Exit", command=self._wrapper(self.quit))
         menu.add_command(label="Users Online Info", command=self._wrapper(self.usersinfo_request))
+        menu.add_command(label="Send file", command=self._wrapper(self.send_file))
         self.master.config(menu=menu)
 
     def set_hotkeys(self):
@@ -63,6 +64,10 @@ class GUIChatClient(BaseChatClient):
         message = self.input_area.get('1.0', 'end').strip()
         self.send_chatmessage(message)
         self.input_area.delete('1.0', 'end')
+
+    def selectfile(self):
+        file_path = filedialog.askopenfilename(title="Open a file", filetypes=(("Text files", "*.txt"), ("All files", "*.*")))
+        return file_path
 
     def report_error(self, text):
         messagebox.showerror('Error', text)
