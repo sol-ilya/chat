@@ -40,6 +40,8 @@ class ChatServer:
         self.server.bind((host, port))
         self.server.listen(5)
         self.history = []
+        self.files = {}
+        self.files_count = 0
         signal.signal(signal.SIGINT, self.shutdown)
         print(f"Server started on port {port}")
 
@@ -49,7 +51,7 @@ class ChatServer:
         for user in User.list():
             try:
                 send_message(user.sock, message, msg_type)
-                print(f'Sended message "{message}" ({msg_type.name})')
+                print(f'Sent message "{message}" ({msg_type.name})')
             except:
                 self.remove_client(user)
 
@@ -78,10 +80,19 @@ class ChatServer:
                 elif msg_type == MsgType.usersinfo:
                     answer = "\0".join(User.names())
                     send_message(user.sock, answer, MsgType.usersinfo)
-                elif msg_type == MsgType.file:
+                elif msg_type == MsgType.put_file:
                     _, data = receive_message(user.sock, throw_error=True)
-                    with open(f'./{message}', "w") as f:
+                    self.files[self.files_count] = message
+                    with open(f'./file_id{self.files_count}', "w") as f:
                         f.write(data)
+                    self.broadcast(f'SERVER: "{user}" sent file #{self.files_count} ({message})')
+                    self.files_count += 1
+                elif msg_type == MsgType.get_file:
+                    if int(message) in self.files:
+                        with open(f'./file_id{message}') as f:
+                            data = f.read()
+                            send_message(user.sock, data, MsgType.get_file)
+                        print(f'Sent file #{message} to "{user}"')
                 else:
                     print('Message of unknown type')
             except:
@@ -134,6 +145,11 @@ class ChatServer:
             elif cmd == 'users':
                 for id, user in User.users.items():
                     print(f'{id}: {user}')
+
+            elif cmd == 'files':
+                for id, file in self.files.items():
+                    print(f'{id}: {file}')
+
             
             elif cmd == 'kill' and args:
                 user = User.users[int(args[0])]

@@ -56,6 +56,9 @@ class BaseChatClient:
                     self.abort('You are banned')
                 elif msg_type == MsgType.usersinfo:
                     self.userinfo_answer_handler(message.split('\0'))
+                elif msg_type == MsgType.get_file:
+                    with open('./buf', 'w') as f:
+                        f.write(message)
                 elif msg_type == MsgType.empty:
                     break
                 else:
@@ -79,6 +82,11 @@ class BaseChatClient:
         except:
             self.abort('An error occured while sending messages')
 
+    def get_file_request(self, file_id):
+        if file_id:
+            self.send_message(file_id, MsgType.get_file)
+
+
     def send_chatmessage(self, message):
         if message:
             self.send_message(message)
@@ -88,10 +96,10 @@ class BaseChatClient:
 
     def send_file(self):
         filename = self.selectfile()
-        if filename is None: return
+        if not filename: return
 
         basename = os.path.basename(filename)
-        self.send_message(basename, MsgType.file)
+        self.send_message(basename, MsgType.put_file)
 
         data = open(filename).read()
         self.send_message(data)

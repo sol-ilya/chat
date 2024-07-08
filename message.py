@@ -8,7 +8,8 @@ class MsgType(enum.Enum):
     srv_shutdown = enum.auto()
     ban          = enum.auto()
     usersinfo    = enum.auto()
-    file         = enum.auto()
+    put_file     = enum.auto()
+    get_file     = enum.auto()
     empty        = enum.auto()
 
 

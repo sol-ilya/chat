@@ -40,7 +40,12 @@ class GUIChatClient(BaseChatClient):
         menu.add_command(label="Exit", command=self._wrapper(self.quit))
         menu.add_command(label="Users Online Info", command=self._wrapper(self.usersinfo_request))
         menu.add_command(label="Send file", command=self._wrapper(self.send_file))
+        menu.add_command(label="Get file", command=self._wrapper(self.get_file))
         self.master.config(menu=menu)
+
+    def get_file(self):
+            self.get_file_request(simpledialog.askstring("File id", "Please choose a file", parent=self.master))
+
 
     def set_hotkeys(self):
         self.master.bind('<Control-q>', self._wrapper(self.quit))
