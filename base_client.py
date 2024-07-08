@@ -9,111 +9,189 @@ from message import *
 
 class BaseChatClient:
     def __init__(self, host='localhost', port=5555):
+        self.connect_to_server(host, port)
+        # signal.signal(signal.SIGINT, self.terminate)
+        self.login()
+        self.start_receive_thread()
+    
+    def connect_to_server(self, host, port):
         self.opened = False
         try:
             self.sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             self.sock.connect((host, port))
-        except:
-            self.abort('Cannot connect to the server')
+            self.opened = True
+        except Exception as e:
+            self.abort(f'Cannot connect to the server {e}')
 
-        self.opened = True
-
-        signal.signal(signal.SIGINT, self.terminate)
-
-        self.username = self.askusername()
+    def login(self):
+        self.username = None
+        self.askusername()
         while True:
-            if self.username == None: self.quit()
+            if self.username is None: self.quit()
             send_message(self.sock, self.username)
-            t, ok = receive_message(self.sock)
+            t, ok = receive_message(self.sock, throw_empty=False)
             if t == MsgType.empty:
                 self.abort('Cannot connect to the server')
-            if ok == "1":
+            if ok == "0":
                 break
-            elif ok == "0":
-                self.username = self.askusername(newtry=True)
+            elif ok == "1":
+                self.askusername(is_used = True)
+            elif ok == "2":
+                self.askusername(is_not_valid = True)
             else:
                 self.abort('Unexpected message received')
 
-
+    def start_receive_thread(self):
         self.receive_thread = threading.Thread(target=self.receive_messages, daemon=True)
         self.receive_thread.start()
 
     def __del__(self):
         self.close_connection()
 
-    def askusername(self, newtry=False):
+    def askusername(self, is_used = False, is_not_valid = False):
         raise NotImplementedError("This method should be overridden in subclasses")
 
+    
+    class StopReceiving(Exception):
+        pass
+    
+    class InvalidMessageType(Exception):
+        pass
+    
     def receive_messages(self):
         while True:
             try:
                 msg_type, message = receive_message(self.sock)
-                if msg_type == MsgType.none:
-                    self.display_message(message)
-                elif msg_type == MsgType.srv_shutdown:
-                    self.server_shutdown_handler()
-                elif msg_type == MsgType.ban:
-                    self.abort('You are banned')
-                elif msg_type == MsgType.usersinfo:
-                    self.userinfo_answer_handler(message.split('\0'))
-                elif msg_type == MsgType.get_file:
-                    with open('./buf', 'w') as f:
-                        f.write(message)
-                elif msg_type == MsgType.empty:
-                    break
-                else:
-                    self.display_message('Special message')
-            except:
-                self.abort('An error occured while receiving messages')
+                self.handle_message(msg_type, message)
+            
+            except self.StopReceiving:
+                break
+                
+            except Empty:
+                if self.opened:
+                    self.abort('Connection lost')
+                break
 
-    def server_shutdown_handler(self):
-        self.abort('Server was shutted down')
+            except Exception as e:
+                self.abort(f'Error receiving messages: {e}')
+                break
 
-    def userinfo_answer_handler(self, users_online):
-        answer = "SERVER: Online are: " + ", ".join(map(lambda s: f'"{s}"', users_online))
-        self.display_message(answer)
+    def handle_message(self, msg_type, message):
+        if msg_type == MsgType.chatmsg:
+            self.display_message(*message.split('\0'))
+        elif msg_type == MsgType.special:
+            self.display_special_message(message)
+        elif msg_type == MsgType.srv_shutdown:
+            self.abort('Server was shutted down')
+            raise self.StopReceiving
+        elif msg_type == MsgType.ban:
+            self.abort('You are banned')
+            raise self.StopReceiving
+        elif msg_type == MsgType.usersinfo:
+            self.display_userinfo(message.split('\0'))
+        elif msg_type == MsgType.get_file:
+            self.handle_file_transfer(message)
+        else:
+            raise self.InvalidMessageType('Received invalid message')
+    
+    def handle_file_transfer(self, message):
+        if not message:
+                self.display_info('Nothing to download')
+                self.send_message('')
+                return
+            
+        filelist = message.split('\0')
+        fileids = filelist[::2]
+        filenames = filelist[1::2]
 
-    def display_message(self, message):
+        if len(fileids) != len(filenames):
+            self.report_error('Invalid data received')
+            self.send_message('')
+            return
+
+        #files = tuple(zip(fileids, filenames))
+
+        index = self.select_file(filenames)
+
+        if index == -1:
+            self.send_message('')
+            return
+        
+        fileid, filename = fileids[index], filenames[index]
+
+        self.send_message(fileid)
+        
+        t, data = receive_byte_message(self.sock)
+
+        if t == MsgType.error:
+            self.report_error('File cannot be downloaded')
+            return
+
+        filename = self.save_file(initname=filename)
+
+        try:
+            with open(filename, "wb") as f:
+                f.write(data)
+        except OSError:
+            self.report_error('Cannot save file')
+
+    def display_message(self, user, message):
         raise NotImplementedError("This method should be overridden in subclasses")
+    
+    def display_special_message(self, message):
+        raise NotImplementedError("This method should be overridden in subclasses")
+
+    def display_info(self, text):
+        raise NotImplementedError("This method should be overridden in subclasses") 
 
     def send_message(self, message, msg_type = MsgType.none):
         try:
             send_message(self.sock, message, msg_type)
-        except:
-            self.abort('An error occured while sending messages')
+        except Exception as e:
+            self.abort(f'An error occured while sending messages {e}')
 
-    def get_file_request(self, file_id):
-        if file_id:
-            self.send_message(file_id, MsgType.get_file)
+    def download_file(self):
+        self.send_message("", MsgType.get_file)
 
+    def get_usersinfo(self):
+        self.send_message("", MsgType.usersinfo)
+
+    def display_userinfo(self, users_online):
+        answer = "Now online are: \n" + "\n".join(map(lambda s: f'"{s}"', users_online))
+        self.display_info(answer)
 
     def send_chatmessage(self, message):
         if message:
-            self.send_message(message)
+            self.send_message(message, MsgType.chatmsg)
 
-    def usersinfo_request(self):
-        self.send_message("", MsgType.usersinfo)
-
-    def send_file(self):
-        filename = self.selectfile()
+    def upload_file(self):
+        filename = self.open_file()
         if not filename: return
 
         basename = os.path.basename(filename)
         self.send_message(basename, MsgType.put_file)
 
-        data = open(filename).read()
-        self.send_message(data)
+        try:
+            with open(filename, "rb") as f:
+                data = f.read()
+                send_byte_message(self.sock, data)
+        except OSError:
+            self.send_message("", MsgType.error)
         
 
-
-    def selectfile(self):
+    def open_file(self):
         raise NotImplementedError("This method should be overridden in subclasses")
 
+    def save_file(self, initname):
+        raise NotImplementedError("This method should be overridden in subclasses") 
+
+    def select_file(self, filenames): # returns selected index from files
+        raise NotImplementedError("This method should be overridden in subclasses") 
 
     def close_connection(self):
         if self.opened:
+            self.opened = False
             self.sock.close()
-        self.opened = False
 
     def prepare_quit(self):
         pass
@@ -126,8 +204,8 @@ class BaseChatClient:
         self.prepare_quit()
         sys.exit(0)
 
-    def abort(self, text = None):
-        if text is not None:
+    def abort(self, text = ""):
+        if text:
             self.report_error(text)
 
         self.close_connection()
