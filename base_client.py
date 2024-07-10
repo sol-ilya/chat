@@ -21,7 +21,7 @@ class BaseChatClient:
             self.sock.connect((host, port))
             self.opened = True
         except Exception as e:
-            self.abort(f'Cannot connect to the server {e}')
+            self.abort(f'Cannot connect to the server: {e}')
 
     def login(self):
         self.username = None
@@ -81,6 +81,8 @@ class BaseChatClient:
             self.display_message(*message.split('\0'))
         elif msg_type == MsgType.special:
             self.display_special_message(message)
+        elif msg_type == MsgType.error:
+            self.display_error(message)
         elif msg_type == MsgType.srv_shutdown:
             self.abort('Server was shutted down')
             raise self.StopReceiving
@@ -88,7 +90,7 @@ class BaseChatClient:
             self.abort('You are banned')
             raise self.StopReceiving
         elif msg_type == MsgType.usersinfo:
-            self.display_userinfo(message.split('\0'))
+            self.display_usersinfo(message.split('\0'))
         elif msg_type == MsgType.get_file:
             self.handle_file_transfer(message)
         else:
@@ -105,7 +107,7 @@ class BaseChatClient:
         filenames = filelist[1::2]
 
         if len(fileids) != len(filenames):
-            self.report_error('Invalid data received')
+            self.display_error('Invalid data received')
             self.send_message('')
             return
 
@@ -124,22 +126,25 @@ class BaseChatClient:
         t, data = receive_byte_message(self.sock)
 
         if t == MsgType.error:
-            self.report_error('File cannot be downloaded')
+            self.display_error('File cannot be downloaded')
             return
 
-        filename = self.save_file(initname=filename)
+        filename = self.save_file(default_name=filename)
 
         try:
             with open(filename, "wb") as f:
                 f.write(data)
         except OSError:
-            self.report_error('Cannot save file')
+            self.display_error('Cannot save file')
 
     def display_message(self, user, message):
         raise NotImplementedError("This method should be overridden in subclasses")
     
     def display_special_message(self, message):
         raise NotImplementedError("This method should be overridden in subclasses")
+    
+    def display_error(self, text):
+        print(text)
 
     def display_info(self, text):
         raise NotImplementedError("This method should be overridden in subclasses") 
@@ -156,7 +161,7 @@ class BaseChatClient:
     def get_usersinfo(self):
         self.send_message("", MsgType.usersinfo)
 
-    def display_userinfo(self, users_online):
+    def display_usersinfo(self, users_online):
         answer = "Now online are: \n" + "\n".join(map(lambda s: f'"{s}"', users_online))
         self.display_info(answer)
 
@@ -182,7 +187,7 @@ class BaseChatClient:
     def open_file(self):
         raise NotImplementedError("This method should be overridden in subclasses")
 
-    def save_file(self, initname):
+    def save_file(self, default_name):
         raise NotImplementedError("This method should be overridden in subclasses") 
 
     def select_file(self, filenames): # returns selected index from files
@@ -202,18 +207,15 @@ class BaseChatClient:
     def quit(self):
         self.close_connection()
         self.prepare_quit()
-        sys.exit(0)
+        os._exit(0)
 
     def abort(self, text = ""):
         if text:
-            self.report_error(text)
+            self.display_error(text)
 
         self.close_connection()
         self.prepare_abort()
-        sys.exit(1)
-
-    def report_error(self, text):
-        print(text)
+        os._exit(1)
 
     def terminate(self, signum, frame):
         self.quit()

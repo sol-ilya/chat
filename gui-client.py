@@ -2,21 +2,47 @@
 
 import tkinter as tk
 from tkinter import scrolledtext, simpledialog, messagebox, filedialog
+import threading as th
+import queue
 from base_client import BaseChatClient
 
 class GUIChatClient(BaseChatClient):
-    def _wrapper(self, func):
-        return lambda event=None: func()
+    #def _wrapper(self, func, *func_args, **func_kwargs):
+    #    return lambda event=None: self.add_task_to_queue(func,func_args, func_kwargs )
     
-    # def _wrapper(self, func, *args, **kwargs):
-    #   return lambda event=None: func(*args, **kwargs)
+    def _wrapper(self, func, *args, **kwargs):
+       return lambda event=None: func(*args, **kwargs)
 
     def __init__(self, master, host='localhost', port=5555):
         self.master = master
         self.master.title("Chat Client")
         self.master.protocol("WM_DELETE_WINDOW", self._wrapper(self.quit))
+        self.init_queue()
         self.create_widgets()
         super().__init__(host, port)
+        
+    def init_queue(self):
+        self.queue = queue.Queue()
+        self.check_queue()
+    
+    def check_queue(self):
+        try:
+            while True:
+                func, args, kwargs, result_queue = self.queue.get_nowait()
+                result = func(*args, **kwargs)
+                if result_queue:
+                    result_queue.put(result)
+        except queue.Empty:
+            pass
+        self.master.after(100, self.check_queue)
+
+    def add_task_to_queue(self, func, *args, result_queue=None, **kwargs):
+        self.queue.put((func, args, kwargs, result_queue))
+    
+    def run_in_main_thread(self, func, *args, **kwargs):
+        result_queue = queue.Queue()
+        self.add_task_to_queue(func, *args, result_queue=result_queue, **kwargs)
+        return result_queue.get()
 
     def create_widgets(self):
         self.create_menu()
@@ -97,17 +123,20 @@ class GUIChatClient(BaseChatClient):
         )
         return file_path
 
-    def save_file(self, initname):
+    def save_file(self, default_name):
         file_path = filedialog.asksaveasfilename(
                 title="Save a file",
                 initialdir='.',
-                initialfile=initname,
+                initialfile=default_name,
                 defaultextension=".txt",
                 filetypes=(("All files", "*.*"), ("Text files", "*.txt"))
         )
         return file_path
-
+    
     def select_file(self, filenames):
+        return self.run_in_main_thread(self._select_file, filenames)
+
+    def _select_file(self, filenames):
         self._res = -1
         self._selection_complete = tk.BooleanVar(value=False)
         
@@ -120,6 +149,7 @@ class GUIChatClient(BaseChatClient):
         self._listbox = tk.Listbox(self._popup)
         for filename in filenames: 
             self._listbox.insert(tk.END, filename)
+        self._listbox.select_set(0)
         self._listbox.pack(padx=20, pady=10)
 
         self._popup.protocol("WM_DELETE_WINDOW", self._wrapper(self._kill_win))
@@ -133,19 +163,26 @@ class GUIChatClient(BaseChatClient):
         cancel_button = tk.Button(button_frame, text="Cancel", command=self._wrapper(self._kill_win))
         cancel_button.pack(side=tk.LEFT, padx=5)
 
-        self.master.wait_variable(self._selection_complete)
+        # self._popup.wait_visibility()   # <<< NOTE
+        self._popup.grab_set()          # <<< NOTE
+        # self._popup.transient(self.master)   # <<< NOTE
+        
+        
+        self._popup.wait_window()
+
         return self._res
 
     def _kill_win(self):
+        self._popup.grab_release()
         self._popup.destroy()
-        self._selection_complete.set(True)
         
     def _on_select(self):
-        if self._listbox.curselection():
-            self._res = self._listbox.curselection()[0]
+        selected = self._listbox.curselection()
+        if selected:
+            self._res = selected[0]
         self._kill_win()
 
-    def report_error(self, text):
+    def display_error(self, text):
         messagebox.showerror('Error', text)
 
     def prepare_quit(self):
