@@ -1,5 +1,6 @@
 import socket
 import threading
+import queue
 import signal
 import sys
 import os
@@ -8,27 +9,40 @@ import os
 from message import *
 
 class BaseChatClient:
-    def __init__(self, host='localhost', port=5555):
-        self.connect_to_server(host, port)
+    def __init__(self, host, port):
+        self.host = host
+        self.port = port
+        self.username = ""
+        
+        self.exit_code = 1
+        signal.signal(signal.SIGTERM, self.terminate)
+        
+        self.queue = queue.Queue()
+        
         # signal.signal(signal.SIGINT, self.terminate)
-        self.login()
-        self.start_receive_thread()
     
+    def start(self):
+        self.connect_to_server(self.host, self.port)
+        self.login()
+        threading.Thread(target=self.receiving_loop, daemon=True).start()
+
     def connect_to_server(self, host, port):
         self.opened = False
         try:
             self.sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            #self.sock.settimeout(3)
             self.sock.connect((host, port))
             self.opened = True
         except Exception as e:
             self.abort(f'Cannot connect to the server: {e}')
 
     def login(self):
-        self.username = None
         self.askusername()
         while True:
-            if self.username is None: self.quit()
-            send_message(self.sock, self.username)
+            if not self.username:
+                self.send_message(self.username)
+                self.quit()
+            self.send_message(self.username)
             t, ok = receive_message(self.sock, throw_empty=False)
             if t == MsgType.empty:
                 self.abort('Cannot connect to the server')
@@ -40,10 +54,6 @@ class BaseChatClient:
                 self.askusername(is_not_valid = True)
             else:
                 self.abort('Unexpected message received')
-
-    def start_receive_thread(self):
-        self.receive_thread = threading.Thread(target=self.receive_messages, daemon=True)
-        self.receive_thread.start()
 
     def __del__(self):
         self.close_connection()
@@ -58,7 +68,7 @@ class BaseChatClient:
     class InvalidMessageType(Exception):
         pass
     
-    def receive_messages(self):
+    def receiving_loop(self):
         while True:
             try:
                 msg_type, message = receive_message(self.sock)
@@ -84,7 +94,7 @@ class BaseChatClient:
         elif msg_type == MsgType.error:
             self.display_error(message)
         elif msg_type == MsgType.srv_shutdown:
-            self.abort('Server was shutted down')
+            self.abort('Server was shut down')
             raise self.StopReceiving
         elif msg_type == MsgType.ban:
             self.abort('You are banned')
@@ -130,6 +140,9 @@ class BaseChatClient:
             return
 
         filename = self.save_file(default_name=filename)
+        
+        if not filename:
+            return
 
         try:
             with open(filename, "wb") as f:
@@ -171,7 +184,8 @@ class BaseChatClient:
 
     def upload_file(self):
         filename = self.open_file()
-        if not filename: return
+        if not filename:
+            return
 
         basename = os.path.basename(filename)
         self.send_message(basename, MsgType.put_file)
@@ -196,7 +210,12 @@ class BaseChatClient:
     def close_connection(self):
         if self.opened:
             self.opened = False
-            self.sock.close()
+            try:
+                self.sock.shutdown(socket.SHUT_RDWR)  # Закрываем сокет для приема и передачи данных
+            except:
+                pass  # Игнорируем возможные ошибки при shutdown
+            finally:
+                self.sock.close()
 
     def prepare_quit(self):
         pass
@@ -204,26 +223,159 @@ class BaseChatClient:
     def prepare_abort(self):
         self.prepare_quit()
 
-    def quit(self):
+    def quit(self, signum=None, frame=None):
         self.close_connection()
         self.prepare_quit()
-        os._exit(0)
+        
+        self.exit_code = 0
+        os.kill(os.getpid(), signal.SIGTERM)
 
-    def abort(self, text = ""):
+    def abort(self, text = "", exit_code=1):
         if text:
             self.display_error(text)
 
         self.close_connection()
         self.prepare_abort()
-        os._exit(1)
+        self.exit_code = exit_code
+        os.kill(os.getpid(), signal.SIGTERM)
 
     def terminate(self, signum, frame):
-        self.quit()
+        sys.exit(self.exit_code)
 
 
+class ThreadSafeChatClient(BaseChatClient):
+    def __init__(self, host, port):
+        self.queue = queue.Queue()
+        self._login_done = threading.Event()
+        super().__init__(host, port)
+    
+    
+    def main_loop(self):
+        self.main_loop_iteration()
+        self.schedule(self.main_loop)
+    
+    def schedule(self, call, now = False):
+        raise NotImplementedError("This method should be overridden in subclasses")
+    
+    def main_loop_iteration(self):
+        
+        while not self.queue.empty():
+            object, func, result_queue, args, kwargs = self.queue.get()
+            result = func(object, *args, **kwargs)
+            if result_queue:
+                result_queue.put(result)
 
+    @staticmethod
+    def run_in_main_thread(call):
+        def wrapper(self, *args, **kwargs):
+            self.queue.put((self, call, None, args, kwargs))
+        return wrapper
+    
+    # @staticmethod
+    # def run_in_main_thread2(call):
+    #     def wrapper(self, *args, **kwargs):
+    #         self.schedule(lambda: call(self, *args, **kwargs), now=True)
+    #     return wrapper
+    
+    @staticmethod
+    def run_in_main_thread_with_result(call):
+        def wrapper(self, *args, **kwargs):
+            result_queue = queue.Queue()
+            self.queue.put((self, call, result_queue, args, kwargs))
+            return result_queue.get()
+        return wrapper
+    
+    @staticmethod
+    def run_in_new_thread(call):
+        def wrapper(self, *args, **kwargs):
+            thread =  threading.Thread(target=call, args=(self,)+args, kwargs=kwargs, daemon=True)
+            thread.start()
+            return thread
+        return wrapper
+    
+        
+    def start(self):
+        self._start()
+        self.main_loop()
+    
+    
+    
+    @run_in_new_thread
+    def _start(self):
+        self.connect_to_server(self.host, self.port)
+        self.login()
+        self.receiving_loop()
+    
+    @run_in_main_thread_with_result
+    def wait_login(self):
+        self._login_done.wait()
+       
+    def on_login_done(self):
+        pass
+    
+    def login(self):
+        super().login()
+        self.on_login_done()
+    
+    @run_in_new_thread
+    def upload_file(self):
+        return super().upload_file()
+    
+    @run_in_new_thread
+    def quit(self, signum=None, frame=None):
+        return super().quit(signum, frame)
 
+    @run_in_new_thread
+    def abort(self, text = "", exit_code=1):
+        return super().abort(text, exit_code)
+    
+    
 
+def thread_safe(client_class):
+    class Wrapper(client_class):
+        @ThreadSafeChatClient.run_in_main_thread
+        def on_login_done(self):
+            return super().on_login_done()
+        
+        @ThreadSafeChatClient.run_in_main_thread_with_result
+        def askusername(self, is_used=False, is_not_valid=False):
+            return super().askusername(is_used, is_not_valid)
 
+        @ThreadSafeChatClient.run_in_main_thread
+        def display_message(self, user, message):
+            return super().display_message(user, message)
 
+        @ThreadSafeChatClient.run_in_main_thread    
+        def display_special_message(self, message):
+            return super().display_special_message(message)
+
+        @ThreadSafeChatClient.run_in_main_thread    
+        def display_info(self, text):
+            return super().display_info(text)
+        
+        @ThreadSafeChatClient.run_in_main_thread_with_result
+        def display_error(self, text):
+            return super().display_error(text)
+
+        @ThreadSafeChatClient.run_in_main_thread_with_result
+        def open_file(self):
+            return super().open_file()
+
+        @ThreadSafeChatClient.run_in_main_thread_with_result
+        def save_file(self, default_name):
+            return super().save_file(default_name)
+
+        @ThreadSafeChatClient.run_in_main_thread_with_result
+        def select_file(self, filenames):
+            return super().select_file(filenames)
+
+        # @ThreadSafeChatClient.run_in_main_thread_with_result
+        # def prepare_quit(self):
+        #     return super().prepare_quit()
+        #
+        # @ThreadSafeChatClient.run_in_main_thread_with_result
+        # def prepare_abort(self):
+        #     return super().prepare_abort()
+
+    return Wrapper
 

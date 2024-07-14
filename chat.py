@@ -72,16 +72,25 @@ def receive_message(sock, throw_empty=True, encoding='utf8'):
     msg_type, data = receive_byte_message(sock, throw_empty)
     return msg_type, data.decode(encoding)
 
+
 import socket
 import threading
 import signal
 import sys
 import os
 
+
+
 class BaseChatClient:
-    def __init__(self, host='localhost', port=5555):
+    def __init__(self, host, port):
+        
+        self.exit_code = 1
+        signal.signal(signal.SIGTERM, self.terminate)
+        
         self.connect_to_server(host, port)
         # signal.signal(signal.SIGINT, self.terminate)
+        
+    def start(self):
         self.login()
         self.start_receive_thread()
     
@@ -92,7 +101,7 @@ class BaseChatClient:
             self.sock.connect((host, port))
             self.opened = True
         except Exception as e:
-            self.abort(f'Cannot connect to the server {e}')
+            self.abort(f'Cannot connect to the server: {e}')
 
     def login(self):
         self.username = None
@@ -113,7 +122,7 @@ class BaseChatClient:
                 self.abort('Unexpected message received')
 
     def start_receive_thread(self):
-        self.receive_thread = threading.Thread(target=self.receive_messages, daemon=True)
+        self.receive_thread = threading.Thread(target=self.receiving_loop, daemon=True)
         self.receive_thread.start()
 
     def __del__(self):
@@ -129,7 +138,7 @@ class BaseChatClient:
     class InvalidMessageType(Exception):
         pass
     
-    def receive_messages(self):
+    def receiving_loop(self):
         while True:
             try:
                 msg_type, message = receive_message(self.sock)
@@ -152,14 +161,16 @@ class BaseChatClient:
             self.display_message(*message.split('\0'))
         elif msg_type == MsgType.special:
             self.display_special_message(message)
+        elif msg_type == MsgType.error:
+            self.display_error(message)
         elif msg_type == MsgType.srv_shutdown:
-            self.abort('Server was shutted down')
+            self.abort('Server was shut down')
             raise self.StopReceiving
         elif msg_type == MsgType.ban:
             self.abort('You are banned')
             raise self.StopReceiving
         elif msg_type == MsgType.usersinfo:
-            self.display_userinfo(message.split('\0'))
+            self.display_usersinfo(message.split('\0'))
         elif msg_type == MsgType.get_file:
             self.handle_file_transfer(message)
         else:
@@ -176,7 +187,7 @@ class BaseChatClient:
         filenames = filelist[1::2]
 
         if len(fileids) != len(filenames):
-            self.report_error('Invalid data received')
+            self.display_error('Invalid data received')
             self.send_message('')
             return
 
@@ -195,22 +206,28 @@ class BaseChatClient:
         t, data = receive_byte_message(self.sock)
 
         if t == MsgType.error:
-            self.report_error('File cannot be downloaded')
+            self.display_error('File cannot be downloaded')
             return
 
-        filename = self.save_file(initname=filename)
+        filename = self.save_file(default_name=filename)
+        
+        if not filename:
+            return
 
         try:
             with open(filename, "wb") as f:
                 f.write(data)
         except OSError:
-            self.report_error('Cannot save file')
+            self.display_error('Cannot save file')
 
     def display_message(self, user, message):
         raise NotImplementedError("This method should be overridden in subclasses")
     
     def display_special_message(self, message):
         raise NotImplementedError("This method should be overridden in subclasses")
+    
+    def display_error(self, text):
+        print(text)
 
     def display_info(self, text):
         raise NotImplementedError("This method should be overridden in subclasses") 
@@ -227,7 +244,7 @@ class BaseChatClient:
     def get_usersinfo(self):
         self.send_message("", MsgType.usersinfo)
 
-    def display_userinfo(self, users_online):
+    def display_usersinfo(self, users_online):
         answer = "Now online are: \n" + "\n".join(map(lambda s: f'"{s}"', users_online))
         self.display_info(answer)
 
@@ -237,7 +254,8 @@ class BaseChatClient:
 
     def upload_file(self):
         filename = self.open_file()
-        if not filename: return
+        if not filename:
+            return
 
         basename = os.path.basename(filename)
         self.send_message(basename, MsgType.put_file)
@@ -253,7 +271,7 @@ class BaseChatClient:
     def open_file(self):
         raise NotImplementedError("This method should be overridden in subclasses")
 
-    def save_file(self, initname):
+    def save_file(self, default_name):
         raise NotImplementedError("This method should be overridden in subclasses") 
 
     def select_file(self, filenames): # returns selected index from files
@@ -270,42 +288,47 @@ class BaseChatClient:
     def prepare_abort(self):
         self.prepare_quit()
 
-    def quit(self):
+    def quit(self, signum=None, frame=None):
         self.close_connection()
         self.prepare_quit()
-        sys.exit(0)
+        
+        self.exit_code = 0
+        os.kill(os.getpid(), signal.SIGTERM)
 
-    def abort(self, text = ""):
+    def abort(self, text = "", exit_code=1):
         if text:
-            self.report_error(text)
+            self.display_error(text)
 
         self.close_connection()
         self.prepare_abort()
-        sys.exit(1)
-
-    def report_error(self, text):
-        print(text)
+        self.exit_code = exit_code
+        os.kill(os.getpid(), signal.SIGTERM)
 
     def terminate(self, signum, frame):
-        self.quit()
+        sys.exit(self.exit_code)
 
 
 import tkinter as tk
 from tkinter import scrolledtext, simpledialog, messagebox, filedialog
+import queue
 
 class GUIChatClient(BaseChatClient):
-    def _wrapper(self, func):
-        return lambda event=None: func()
+    #def _wrapper(self, func, *func_args, **func_kwargs):
+    #    return lambda event=None: self.add_task_to_queue(func,func_args, func_kwargs )
     
-    # def _wrapper(self, func, *args, **kwargs):
-    #   return lambda event=None: func(*args, **kwargs)
+    def _wrapper(self, func, *args, **kwargs):
+       return lambda event=None: func(*args, **kwargs)
 
     def __init__(self, master, host='localhost', port=5555):
         self.master = master
         self.master.title("Chat Client")
         self.master.protocol("WM_DELETE_WINDOW", self._wrapper(self.quit))
+        self.init_queue()
         self.create_widgets()
         super().__init__(host, port)
+        
+        self.start()
+        self.input_area.focus_set()
 
     def create_widgets(self):
         self.create_menu()
@@ -325,28 +348,58 @@ class GUIChatClient(BaseChatClient):
         self.master.bind('<Control-q>', self._wrapper(self.quit))
         self.master.bind('<Control-s>', self._wrapper(self.write))
         self.master.bind('<Control-Return>', self._wrapper(self.write))
+        self.master.bind('<Control-o>', self._wrapper(self.get_usersinfo))
+        self.master.bind('<Control-p>', self._wrapper(self.upload_file))
+        self.master.bind('<Control-g>', self._wrapper(self.download_file))
+        
+        
+        
 
     def create_chat_interface(self):
         self.chat_label = tk.Label(self.master, text="Chat:")
         self.chat_label.pack(padx=20, pady=5)
 
-        self.text_area = scrolledtext.ScrolledText(self.master)
+        self.text_area = scrolledtext.ScrolledText(self.master, wrap=tk.WORD)
         
         self.text_area.tag_configure('special', foreground='green')
         self.text_area.tag_configure('user', foreground='blue')
         self.text_area.tag_configure('normal')
-        self.text_area.pack(padx=20, pady=5)
+        self.text_area.pack(padx=20, pady=5, expand=True, fill='both')
         self.text_area.config(state='disabled')
 
     def create_input_interface(self):
         self.msg_label = tk.Label(self.master, text="Message:")
         self.msg_label.pack(padx=20, pady=5)
 
-        self.input_area = tk.Text(self.master, height=3)
-        self.input_area.pack(padx=20, pady=5)
+        self.input_area = scrolledtext.ScrolledText(self.master, height=3, wrap=tk.WORD)
+        self.input_area.pack(padx=20, pady=5, expand=True, fill='both')
+        
+        #self.input_area.focus_set()
+        
+        self.input_area.bind('<Control-u>', self._wrapper(self.clear_entry))
 
         self.send_button = tk.Button(self.master, text="Send", command=self._wrapper(self.write))
         self.send_button.pack(padx=20, pady=5)
+    
+    def init_queue(self):
+        self.queue = queue.Queue()
+        self.check_queue()
+    
+    def check_queue(self):
+        try:
+            while True:
+                func, result_queue, args, kwargs = self.queue.get_nowait()
+                result = func(*args, **kwargs)
+                if result_queue:
+                    result_queue.put(result)
+        except queue.Empty:
+            pass
+        self.master.after(100, self.check_queue)
+
+    def run_in_main_thread(self, func, *args, **kwargs):
+        result_queue = queue.Queue()
+        self.queue.put((func, result_queue, args, kwargs))
+        return result_queue.get()
 
     def askusername(self, is_used=False, is_not_valid=False):
         if is_used:
@@ -376,6 +429,9 @@ class GUIChatClient(BaseChatClient):
     def write(self):
         message = self.input_area.get('1.0', 'end').strip()
         self.send_chatmessage(message)
+        self.clear_entry()
+    
+    def clear_entry(self):
         self.input_area.delete('1.0', 'end')
 
     def open_file(self):
@@ -384,57 +440,72 @@ class GUIChatClient(BaseChatClient):
             initialdir='.',
             filetypes=(("All files", "*.*"), ("Text files", "*.txt"))
         )
+        if not file_path:
+            return None
         return file_path
 
-    def save_file(self, initname):
+    def save_file(self, default_name):
         file_path = filedialog.asksaveasfilename(
                 title="Save a file",
                 initialdir='.',
-                initialfile=initname,
+                initialfile=default_name,
                 defaultextension=".txt",
                 filetypes=(("All files", "*.*"), ("Text files", "*.txt"))
         )
+        if not file_path:
+            return None
         return file_path
-
+    
     def select_file(self, filenames):
-        self._res = -1
-        self._selection_complete = tk.BooleanVar(value=False)
+        return self.run_in_main_thread(self._select_file, filenames)
+
+    def _select_file(self, filenames):
+        res = -1
         
-        self._popup = tk.Toplevel(self.master)
-        self._popup.title("File selection")
+        popup = tk.Toplevel(self.master)
+        popup.title("File selection")
         
-        label = tk.Label(self._popup, text="Select file to download")
+        label = tk.Label(popup, text="Select file to download")
         label.pack(pady=10)
 
-        self._listbox = tk.Listbox(self._popup)
+        listbox = tk.Listbox(popup)
         for filename in filenames: 
-            self._listbox.insert(tk.END, filename)
-        self._listbox.pack(padx=20, pady=10)
+            listbox.insert(tk.END, filename)
+        listbox.select_set(0)
+        listbox.pack(padx=20, pady=10)
+        
+        def close():
+            popup.grab_release()
+            popup.destroy()
+        
+        def on_select():
+            nonlocal res
+            selected = listbox.curselection()
+            if selected:
+                res = selected[0]
+            close()
 
-        self._popup.protocol("WM_DELETE_WINDOW", self._wrapper(self._kill_win))
+        popup.bind('<Return>', self._wrapper(on_select))
+        popup.bind('<Escape>', self._wrapper(close))
 
-        button_frame = tk.Frame(self._popup)
+        button_frame = tk.Frame(popup)
         button_frame.pack(pady=10)
-
-        select_button = tk.Button(button_frame, text="Select", command=self._wrapper(self._on_select))
+        
+        select_button = tk.Button(button_frame, text="Select", command=self._wrapper(on_select))
         select_button.pack(side=tk.LEFT, padx=5)
 
-        cancel_button = tk.Button(button_frame, text="Cancel", command=self._wrapper(self._kill_win))
+        cancel_button = tk.Button(button_frame, text="Cancel", command=self._wrapper(close))
         cancel_button.pack(side=tk.LEFT, padx=5)
 
-        self.master.wait_variable(self._selection_complete)
-        return self._res
-
-    def _kill_win(self):
-        self._popup.destroy()
-        self._selection_complete.set(True)
+        popup.protocol("WM_DELETE_WINDOW", self._wrapper(close))
         
-    def _on_select(self):
-        if self._listbox.curselection():
-            self._res = self._listbox.curselection()[0]
-        self._kill_win()
+        popup.grab_set()
+        popup.wait_window()
+    
 
-    def report_error(self, text):
+        return res
+
+    def display_error(self, text):
         messagebox.showerror('Error', text)
 
     def prepare_quit(self):
@@ -447,8 +518,3 @@ if __name__ == "__main__":
     # client = GUIChatClient(root, port = 55555)
     client = GUIChatClient(root, host = 's-ia.ru', port = 21)
     root.mainloop()
-
-
-
-
-

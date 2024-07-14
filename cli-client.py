@@ -1,17 +1,20 @@
 import signal
 import os
-from colorama import init, Fore, Back, Style
+from colorama import init, Fore, Style
+
 from base_client import BaseChatClient
 
 class CLIChatClient(BaseChatClient):
     def __init__(self, host='localhost', port=5555):
         init() # colorama
-        signal.signal(signal.SIGINT, self.terminate)
+        signal.signal(signal.SIGINT, self.quit)
         super().__init__(host, port)
         #sending = threading.Thread(target=self.send_messages, daemon=True)
         #sending.start()
         #sending.join()
-        self.send_messages()
+        self.start()
+        
+        self.sending_loop()
 
 
     def askusername(self, is_used = False, is_not_valid = False):
@@ -57,7 +60,7 @@ class CLIChatClient(BaseChatClient):
         return filename
         
 
-    def send_messages(self):
+    def sending_loop(self):
         while True:
             message = input()
             if not message:

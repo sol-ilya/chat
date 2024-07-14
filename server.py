@@ -42,7 +42,7 @@ class ChatServer:
     def __init__(self, host='0.0.0.0', port=5555):
         self.server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         self.server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        self.server.setsockopt(socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1)
+        #self.server.setsockopt(socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1)
         self.server.bind((host, port))
         self.server.listen(5)
         
@@ -79,7 +79,7 @@ class ChatServer:
                 else:
                     send_message(user.sock, message, msg_type)
                     
-                self.log(f'Sent message "{message}" ({msg_type.name}) to {user}')
+                # self.log(f'Sent message "{message}" ({msg_type.name}) to {user}')
             except Exception as e:
                 self.log(f'Error broadcasting to {user}: {e}')
                 self.remove_client(user)
@@ -107,11 +107,11 @@ class ChatServer:
         
         
         user = User(username, client_socket)
-        self.broadcast(f'{user} has joined the chat!', MsgType.special)
         self.log(f'New user added: {user}')
-        
         for msg, msg_type in self.history:
             send_message(user.sock, msg, msg_type)
+        self.broadcast(f'{user} has joined the chat!', MsgType.special)
+        
 
         while True:
             try:
@@ -149,11 +149,11 @@ class ChatServer:
             self.log('Stopped file getting procedure')
             return
         try:
-            self.add_file(filename, data)
+            fileid = self.add_file(filename, data)
         except OSError:
             send_message(user.sock, "Your file was not saved", MsgType.error)
         else:
-            self.broadcast(f'{user} sent file "{filename}"', MsgType.special)
+            self.broadcast(f'{user} uploaded file "{filename}" ({fileid})', MsgType.special)
     
     def add_file(self, filename, data):
         fileid = str(self.files_count)
@@ -163,7 +163,7 @@ class ChatServer:
         self.files[fileid] = filename
         self.files_count += 1
         
-        return 0
+        return fileid
     
     def send_filelist(self, user):
         msg = "\0".join(f'{i}\0{f}' for i, f in self.files.items())
@@ -191,12 +191,12 @@ class ChatServer:
     def set_username(self, client_socket):
         while True:
             t, username = receive_message(client_socket, throw_empty=False)
-            if t == MsgType.empty:
+            if t == MsgType.empty or not username:
                 client_socket.close()
                 return None
             elif not self.check_username(username):
                 send_message(client_socket, '2')
-            elif username in User.names():
+            elif username in User.names() or username == 'admin':
                 send_message(client_socket, '1')
             else:
                 send_message(client_socket, '0')
@@ -239,10 +239,6 @@ class ChatServer:
                     for user in User.list():
                         print(f'{user.id}: {user}')
 
-                elif cmd == 'files':
-                    for i, file in self.files.items():
-                        print(f'{i}: {file}')
-
                 elif cmd == 'kill' and args:
                     user_id = int(args[0])
                     user = User.get_user_by_id(user_id)
@@ -264,6 +260,10 @@ class ChatServer:
                     else:
                         self.show_log = True
                         self.show_hidden_log()
+                        
+                elif cmd == 'files':
+                    for i, file in self.files.items():
+                        print(f'{i}: {file}')
                 
                 elif cmd == 'load':
                     filename = input('Enter filename: ')
@@ -272,6 +272,15 @@ class ChatServer:
                     
                     self.add_file(os.path.basename(filename), data)
                     self.broadcast(f'admin sent file "{filename}"', MsgType.special)
+                    
+                elif cmd == 'rm' and args:
+                    fileid = args[0]
+                    if fileid not in self.files:
+                        print(f'File with id {fileid} does not exist')
+                    os.remove(f'{self.files_directory}/id{fileid}')
+                    self.log(f'File #{fileid} was removed')
+                    filename = self.files.pop(fileid)
+                    self.broadcast(f'File "{filename}" ({fileid}) was removed', MsgType.special)
                     
 
                 else:
