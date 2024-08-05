@@ -1,0 +1,321 @@
+#!/bin/python
+
+import math
+import readline
+
+class Lexer:
+    def __init__(self):
+        self.ch = None
+        self.text = ''
+        self.pos = 0
+
+    def reset(self, text):
+        self.text = text
+        self.pos = 0
+        self.ch = self.text[self.pos] if self.text else None
+
+    def next(self):
+        self.pos += 1
+        if self.pos >= len(self.text):
+            self.ch = None
+        else:
+            self.ch = self.text[self.pos]
+
+    def skip_whitespace(self):
+        while self.ch is not None and self.ch.isspace():
+            self.next()
+
+    def number(self):
+        result = ''
+        while self.ch is not None and (self.ch.isdigit() or self.ch == '.'):
+            result += self.ch
+            self.next()
+        if '.' not in result:   
+            return ('NUM', int(result))
+        else:
+            return ('NUM', float(result))
+
+    def identifier(self):
+        result = ''
+        while self.ch is not None and (self.ch.isalnum() or self.ch == '_'):
+            result += self.ch
+            self.next()
+        return ('ID', result)
+
+    def lex(self, text):
+        self.reset(text)
+        tokens = []
+
+        while self.ch != None:
+            if self.ch.isspace():
+                self.skip_whitespace()
+            elif self.ch.isdigit():
+               tokens.append(self.number())
+            elif self.ch.isalpha() or self.ch == '_':
+                tokens.append(self.identifier())
+            elif self.ch == '*':
+                self.next()
+                if self.ch == '*':
+                    tokens.append(('^',))
+                    self.next()
+                else:
+                    tokens.append(('*',))
+            elif self.ch in '+-=(),^/.':
+                tokens.append((self.ch,))
+                self.next()
+            else:
+                raise Exception(f'Illegal character: {self.ch}')
+        return tokens
+
+class ParserException(Exception):
+            def __init__(self, msg):
+                self.msg = msg
+     
+            def __str__(self):
+                return self.msg
+
+class Parser:
+    def __init__(self):
+        self.lexer = Lexer()
+        self.tokens = []
+        self.token = ('NONE',)
+        self.pos = 0
+
+        self.symbol = {
+                    'pi':   ('CONST', math.pi),
+                    'e' :   ('CONST', math.e),
+                    'i' :   ('CONST', 1j),
+
+                    'sin':  ('FUNC', math.sin),
+                    'cos':  ('FUNC', math.cos),
+                    'tan':  ('FUNC', math.tan),
+                    'asin':  ('FUNC', math.asin),
+                    'acos':  ('FUNC', math.acos),
+                    'atan':  ('FUNC', math.atan),
+                    'exp':  ('FUNC', math.exp),
+                    'ln':   ('FUNC', math.log),
+
+                       }
+        
+    def reset(self, tokens):
+        self.tokens = tokens
+        self.pos = 0
+        self.token = self.tokens[self.pos] if self.tokens else ('NONE',)
+
+    def tokenis(self, *args):
+        return self.token[0] in args
+
+    def idis(self, *args, name = None):
+        if name is None:
+            if not self.tokenis('ID'):
+                return False
+            name = self.token[1]
+        return self.symbol.get(name, ('VAR',))[0] in args
+
+    def idvalue(self):
+        return self.symbol.get(self.token[1], ('VAR', None))[1]
+
+    def next(self):
+        self.pos += 1
+        if self.pos >= len(self.tokens):
+            self.token = ('NONE',)
+        else:
+            self.token = self.tokens[self.pos]
+
+        #print(self.token)
+
+    def prev(self):
+        self.pos -= 1
+        if self.pos < 0:
+            self.token = ('NONE',)
+        else:
+            self.token = self.tokens[self.pos]
+
+    '''def syntax_error(self):
+        self.error('Syntax error')
+    '''
+    
+    def error(self, msg):
+        raise ParserException(msg)
+
+    def eval(self, text):
+        tokens = self.lexer.lex(text)
+        self.reset(tokens)
+
+        result = self.commas()
+        if not self.tokenis('NONE'):
+            self.error('Syntax error')
+        return result
+
+    def commas(self):
+##        print('in commas', self.token)
+        lst = []
+        
+        result = self.cmd()
+        
+        if result is not None:
+            lst.append(result)
+            
+        while self.tokenis(','):
+            self.next()
+            result = self.cmd()
+            if result is not None:
+                lst.append(result)
+                
+        return lst
+
+    def cmd(self):
+##        print('in cmd', self.token)
+        if self.idis('CMD'):
+            cmd = self.idvalue()
+            self.next()
+            return cmd(self.assign())
+        else:
+            return self.assign()
+
+    def assign(self):
+##        print('in assign', self.token)
+        if not self.tokenis('ID'):
+            return self.expr()
+        
+        var_name = self.token[1]
+        self.next()
+        if self.tokenis('='):
+            if self.idis('CONST', name = var_name):
+                self.error('Error: Assignment of constant')
+            if not self.idis('VAR', name = var_name):
+                self.error(f'Error: Identifier \'{var_name}\' can not be used as variable name')
+            
+            self.next()
+            result = self.assign()
+            self.symbol[var_name] = ('VAR', result)
+            return result
+        self.prev()
+        return self.expr()
+
+    def expr(self):
+##        print('in expr', self.token)
+        result = self.term()
+        while self.tokenis('+', '-'):
+            if self.tokenis('+'):
+                self.next()
+                result += self.term()
+            else:
+                self.next()
+                result -= self.term()
+        return result
+
+    def term(self):
+##        print('in term', self.token)
+        result = self.unary()
+        while True:
+            if self.tokenis('*'):
+                self.next()
+                result *= self.unary()
+            elif self.tokenis('/'):
+                self.next()
+                result /= self.unary()
+            elif self.tokenis('(', 'ID', 'NUM'):
+                result *= self.unary()
+            else:
+                return result
+
+    def unary(self):
+##        print('in unary', self.token)
+        if self.tokenis('-'):
+            self.next()
+            return -self.unary()
+        if self.tokenis('+'):
+            self.next()
+            return self.unary()
+        return self.power()
+    
+
+    def power(self):
+##        print('in power', self.token)
+        result = self.factor()
+        if self.tokenis('^'):
+            self.next()
+            p = self.unary()
+            return result ** p
+        return result
+
+    
+
+    def factor(self):
+##        print('in factor', self.token)
+        
+        if self.tokenis('('):
+            self.next()
+
+            result = self.assign()
+
+            if not self.tokenis(')'):
+                self.error('Syntax error: Right parenthesis required')
+            self.next()
+
+            return result
+
+        return self.atom()
+
+    def atom(self):
+##        print('in atom', self.token)
+        if self.tokenis('NUM'):
+            result = self.token[1]
+            self.next()
+            return result
+
+        if self.idis('VAR', 'CONST'):
+            name = self.token[1]
+            value = self.idvalue()
+            self.next()
+            if value is None:
+                self.error(f'Variable \'{name}\' is not defined')
+            else:
+                return value
+
+        if self.idis('FUNC'):
+            f = self.idvalue()
+            self.next()
+            '''if self.token[0] == 'NUM':
+                result = self.token[1]
+                self.next()
+            
+                else:
+            '''
+            result = self.unary()
+            return f(result)
+
+        if self.tokenis('NONE'):
+            return None
+            
+        self.error('Syntax error')
+        
+        
+'''
+parser = Parser()
+print(parser.eval('a, b'))
+
+'''      
+parser = Parser()
+while True:
+    try:
+        s = input('>> ')
+        if s == 'quit':
+            break
+        ans = parser.eval(s)
+        if ans:
+             parser.symbol['ans'] = ('CONST', ans[-1])
+             print("\n".join(str(x) for x in ans))
+    except ParserException as parser_err:
+        print(parser_err)
+        
+    except EOFError:
+        break
+
+    except Exception as err:
+        print(err)
+        
+    except:
+        print('Error')
+# print("\n")

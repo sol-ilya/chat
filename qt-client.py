@@ -1,14 +1,15 @@
 import sys
+
 from PyQt5.QtWidgets import (
     QApplication, QWidget, QVBoxLayout, QLabel, QTextEdit, QPushButton, QMessageBox, QFileDialog, QMenuBar, QAction, QInputDialog
 )
-from PyQt5.QtCore import Qt, QTimer
+from PyQt5.QtCore import QTimer
 from PyQt5.QtGui import QFont, QKeySequence
 
-from base_client import ThreadSafeChatClient, thread_safe
+from base_client import BaseChatClient
 
-@thread_safe
-class GUIChatClient(ThreadSafeChatClient):
+
+class GUIChatClient(BaseChatClient):
     def _wrapper(self, func, *args, **kwargs):
        return lambda *l_args, **l_kwargs: func(*args, **kwargs)
     
@@ -28,21 +29,17 @@ class GUIChatClient(ThreadSafeChatClient):
         self.create_input_interface()
         
         self.start()
+        self.input_area.setFocus()
 
         self.window.setLayout(self.layout)
         self.window.show()
         sys.exit(self.app.exec_())
+        
     
-    def on_login_done(self):
-        self.input_area.setFocus()
-    
-    def schedule(self, call, now = False):
+    def schedule(self, call):
         self.timer = QTimer()
         self.timer.timeout.connect(call)
-        if now:
-            self.timer.start(0)
-        else:
-            self.timer.start(100)
+        self.timer.start(100)
 
 
     def create_menu(self):
